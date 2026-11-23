@@ -2,3 +2,5 @@
 pyyaml>=6.0
 tqdm>=4.60
 sentence-transformers>=2.2.2   # only needed for Amazon item text embeddings
+gspread>=5.12                  # results -> Google Sheet (preinstalled on Colab)
+matplotlib>=3.6                # paper figures (preinstalled on Colab)

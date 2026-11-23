@@ -2,7 +2,8 @@
 
   python -m tidegr.report --runs_root <root> --dataset kuairand [--reference tidegr]
 
-Writes <root>/<dataset>/results/{summary.csv, table.md, significance.csv}.
+Writes <root>/<dataset>/results/{summary.csv, table.md, significance.csv} and the paper
+figures in results/figures/ (see tidegr.plots).
 Significance: paired Wilcoxon signed-rank test on per-(user, block, seed)
 NDCG@20 of the reference vs. each other run (matched seeds), Holm-corrected.
 """
@@ -122,6 +123,11 @@ def main(argv=None):
     pd.set_option("display.width", 250)
     print(t.to_string())
     print(sig.to_string())
+    try:
+        from .plots import make_all
+        make_all(a.runs_root, a.dataset, a.reference)
+    except Exception as e:  # figures must never break the tables
+        print(f"[plots] skipped: {e!r}")
 
 
 if __name__ == "__main__":
