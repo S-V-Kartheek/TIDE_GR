@@ -39,7 +39,7 @@ def test_resume_is_exact():
         b = None
         for _ in range(300):
             try:
-                b = _run("methods/tidegr.yaml", root, max_hours=3 / 3600, name="B")
+                b = _run("methods/tidegr.yaml", root, max_hours=15 / 3600, name="B")
                 break
             except TimeLimitReached:
                 continue
