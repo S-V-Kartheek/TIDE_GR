@@ -1,0 +1,9 @@
+# PDA (Zhang et al., SIGIR 2021) on LightGCN: popularity-deconfounded training,
+# forecast popularity at inference.
+inherit: [lightgcn_ft.yaml]
+method:
+  name: pda
+  pda: true
+  pda_gamma: 0.1
+tune:
+  - [method.pda_gamma, [0.02, 0.1, 0.25]]

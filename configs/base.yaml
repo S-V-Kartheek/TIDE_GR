@@ -1,0 +1,17 @@
+# Shared defaults for every run. Dataset files, method files and plan overrides are merged on top.
+runs_root: ./runs          # on Colab: /content/drive/MyDrive/TIDE_GR_runs (shared folder)
+device: auto
+data_seed: 0
+max_hours: 11.0            # stop cleanly before the Colab session limit; resume later
+
+eval:
+  k: 20
+  n_neg_calib: 99
+  max_pos_per_user: 50
+  val_max_users: 3000
+  chunk: 1024
+
+aci:
+  gamma: 0.05
+  delay: 1
+  tau0: 0.0

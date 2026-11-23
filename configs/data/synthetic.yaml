@@ -1,0 +1,17 @@
+data:
+  name: synthetic
+  n_users: 600
+  n_items: 400
+  n_blocks: 9
+  n_warmup: 5
+  per_user_per_block: 4.0
+aci:
+  delay: 1
+auto:
+  recent_n: 5
+  tau_rho: 3.0
+  memory_window: 4
+method_overrides:          # test-speed settings, applied to every method
+  epochs: {warmup_max: 20, warmup_eval_every: 2, warmup_patience: 3, stream: 4}
+  batch: 1024
+tune_blocks: 2

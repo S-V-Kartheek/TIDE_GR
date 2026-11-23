@@ -1,0 +1,36 @@
+# Full experiment plan for Amazon Reviews 2023 Video_Games 5-core.
+# SQN is skipped: every review has the same reward, so the Q-head carries no extra signal.
+data: data/amazon_vg.yaml
+runs:
+  # ---- stage 1: main model + key baselines, seed 0 (tuning on history only) ----
+  - {name: tidegr,           method: methods/tidegr.yaml,           seeds: [0], tune: true}
+  - {name: lightgcn_ft,      method: methods/lightgcn_ft.yaml,      seeds: [0], tune: true}
+  - {name: xsimgcl_ft,       method: methods/xsimgcl_ft.yaml,       seeds: [0], tune: true}
+  - {name: sasrec,           method: methods/sasrec.yaml,           seeds: [0], tune: true}
+  - {name: pda,              method: methods/pda.yaml,              seeds: [0], tune: true}
+  - {name: ewc,              method: methods/ewc.yaml,              seeds: [0], tune: true}
+  - {name: kd_lite,          method: methods/kd_lite.yaml,          seeds: [0], tune: true}
+  - {name: lightgcn_retrain, method: methods/lightgcn_retrain.yaml, seeds: [0], tuned_from: lightgcn_ft}
+  # ---- stage 2: more seeds for the main comparison ----
+  - {name: tidegr,           method: methods/tidegr.yaml,           seeds: [1, 2], tune: true}
+  - {name: lightgcn_ft,      method: methods/lightgcn_ft.yaml,      seeds: [1, 2], tune: true}
+  - {name: xsimgcl_ft,       method: methods/xsimgcl_ft.yaml,       seeds: [1, 2], tune: true}
+  - {name: sasrec,           method: methods/sasrec.yaml,           seeds: [1, 2], tune: true}
+  # ---- stage 3: ablations of TIDE-GR (seed 0, tuned TIDE-GR parameters), most important first ----
+  - {name: abl_no_belief,     method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr,
+     overrides: {method.anchor: none, method.drift.enabled: false, method.rl.enabled: false, method.edge_samples: 0, method.thompson: false, method.calib_use_var: false}}
+  - {name: abl_raw_cusum,     method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.drift.mode: raw}}
+  - {name: abl_rl_off,        method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.rl.enabled: false}}
+  - {name: abl_rl_random,     method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.rl.random: true}}
+  - {name: abl_fixed_q,       method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.belief.gate: false}}
+  - {name: abl_no_memory,     method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.memory.enabled: false}}
+  - {name: abl_nu0,           method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.calib_use_var: false}}
+  - {name: abl_no_boosters,   method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr,
+     overrides: {method.loss: bpr, method.contrast.lambda_cl: 0.0, method.recent.gamma: 0.0}}
+  - {name: abl_no_vrex,       method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.vrex.lambda_inv: 0.0}}
+  - {name: abl_rl_nodrift_ctx, method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.rl.no_drift_context: true}}
+  # ---- stage 4 (optional, if time remains) ----
+  - {name: abl_arm_plastic,   method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.rl.enabled: false, method.rl.fixed_arm: 2}}
+  - {name: abl_arm_conservative, method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.rl.enabled: false, method.rl.fixed_arm: 1}}
+  - {name: abl_no_openworld,  method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.openworld.enabled: false}}
+  - {name: ensemble,          method: methods/ensemble.yaml, seeds: [0], tuned_from: lightgcn_ft}

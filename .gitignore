@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+runs/
+raw/
+data_cache/
+*.pt
+*.npz
+*.gz
+*.tar.gz
+.venv/
+.vscode/

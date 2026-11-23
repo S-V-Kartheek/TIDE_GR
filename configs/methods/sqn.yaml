@@ -1,0 +1,8 @@
+# SQN (Xin et al., SIGIR 2020): SASRec + Q-learning head with logged rewards.
+inherit: [sasrec.yaml]
+method:
+  name: sqn
+  kind: sqn
+  q_gamma: 0.5
+  q_weight: 1.0
+tune: []

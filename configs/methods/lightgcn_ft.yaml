@@ -1,0 +1,22 @@
+# LightGCN fine-tuned per block (BPR, plain weight decay, no continual mechanism).
+inherit: [tidegr.yaml]
+method:
+  name: lightgcn_ft
+  loss: bpr
+  contrast: {lambda_cl: 0.0}
+  recent: {gamma: 0.0}
+  env_head: false
+  vrex: {lambda_inv: 0.0}
+  anchor: none
+  weight_decay_reg: 0.0001
+  drift: {enabled: false}
+  rl: {enabled: false}
+  memory: {enabled: false}
+  openworld: {enabled: false}
+  edge: {tau_rho: 0.0}       # uniform edge weights (standard LightGCN)
+  edge_samples: 0
+  thompson: false
+  calib_use_var: false
+tune:
+  - [method.layers, [2, 3]]
+  - [method.weight_decay_reg, [0.0001, 0.001]]

@@ -1,0 +1,8 @@
+# Online EWC on LightGCN: Laplace/Fisher-diagonal anchor, no drift gating, no memory.
+inherit: [lightgcn_ft.yaml]
+method:
+  name: ewc
+  anchor: ewc
+  belief: {n0: 1.0, gamma_F: 100.0}
+tune:
+  - [method.belief.gamma_F, [1.0, 100.0, 10000.0]]

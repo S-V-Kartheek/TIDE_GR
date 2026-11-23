@@ -1,0 +1,8 @@
+# Deep ensemble (5 x LightGCN-FT): uncertainty upper reference.
+inherit: [lightgcn_ft.yaml]
+method:
+  name: ensemble
+  kind: ensemble
+  members: 5
+  calib_use_var: true
+tune: []

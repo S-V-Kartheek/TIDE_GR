@@ -1,0 +1,6 @@
+# LightGCN re-trained from scratch on all history at every block.
+inherit: [lightgcn_ft.yaml]
+method:
+  name: lightgcn_retrain
+  continual: retrain
+tune: []

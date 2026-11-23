@@ -1,0 +1,16 @@
+# SASRec fine-tuned per block (sampled-softmax loss).
+method:
+  name: sasrec
+  kind: sasrec
+  dim: 64
+  layers: 2
+  heads: 1
+  dropout: 0.2
+  max_len: 50
+  n_neg: 64
+  tau_s: 1.0
+  lr: 0.001
+  batch: 512
+  epochs: {warmup_max: 100, warmup_patience: 3, warmup_eval_every: 1, stream: 10, stream_patience: 2}
+tune:
+  - [method.dropout, [0.2, 0.5]]

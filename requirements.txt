@@ -1,0 +1,4 @@
+# Colab already provides torch, numpy, pandas, scipy, scikit-learn.
+pyyaml>=6.0
+tqdm>=4.60
+sentence-transformers>=2.2.2   # only needed for Amazon item text embeddings

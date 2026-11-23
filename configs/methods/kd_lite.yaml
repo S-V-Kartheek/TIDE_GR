@@ -1,0 +1,9 @@
+# Uniform L2 anchor to the previous embeddings (distillation-style continual baseline,
+# a simplified stand-in for GraphSAIL / LWC-KD; name it honestly in the paper).
+inherit: [lightgcn_ft.yaml]
+method:
+  name: kd_lite
+  anchor: l2
+  anchor_l2: 100.0
+tune:
+  - [method.anchor_l2, [10.0, 100.0, 1000.0]]

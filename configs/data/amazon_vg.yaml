@@ -1,0 +1,16 @@
+data:
+  name: amazon_vg
+  category: Video_Games
+  history_start_year: 2015     # everything before 2015 = one history block
+  stream_start_year: 2018      # 2015-2017 quarters = history (warm-up); 2018Q1 on = stream
+  use_text: true
+  val_frac: 0.1
+  ret_frac: 0.05
+  aci_round_seconds: 604800    # weekly ACI rounds
+aci:
+  delay: 13                    # feedback for a weekly round arrives by the end of the quarter
+auto:                          # dataset defaults used where a method config says 'auto'
+  recent_n: 5
+  tau_rho: 4.0               # edge age decay, in blocks
+  memory_window: 8
+tune_blocks: 3

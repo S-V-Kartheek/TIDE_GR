@@ -1,0 +1,10 @@
+# Pilot H3: does the surprise-CUSUM separate real preference change from sparse evidence
+# better than a raw-loss CUSUM? 5% of stream users get a synthetic preference swap
+# (item permutation) from the 4th stream day on. Reports drift_auc in the summary.
+data: data/kuairand.yaml
+data_overrides: {data: {swap_frac: 0.05, swap_stream_offset: 3}}
+results_name: kuairand_h3
+tuning_from_dataset: kuairand
+runs:
+  - {name: h3_surprise, method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr}
+  - {name: h3_raw,      method: methods/tidegr.yaml, seeds: [0], tuned_from: tidegr, overrides: {method.drift.mode: raw}}

@@ -1,0 +1,16 @@
+data:
+  name: kuairand
+  positive: click_engaged      # click AND (long_view | like | follow | comment | forward), not hate
+  stream_start_date: 20220422  # Apr 8-21 = history (warm-up), Apr 22 - May 8 = stream (daily blocks)
+  use_random_eval: true        # random-exposure log -> unbiased evaluation only
+  captions: false              # true = download 3.2 GB caption file for the new-item prior
+  val_frac: 0.1
+  ret_frac: 0.05
+  aci_round_seconds: 3600      # hourly ACI rounds
+aci:
+  delay: 24                    # feedback for an hourly round arrives by the end of the day
+auto:                          # dataset defaults used where a method config says 'auto'
+  recent_n: 20
+  tau_rho: 7.0               # edge age decay, in blocks
+  memory_window: 7
+tune_blocks: 3                 # last 3 history blocks form the tuning mini-stream

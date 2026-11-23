@@ -1,0 +1,41 @@
+# TIDE-GR (final architecture, research/TIDE-GR_FINAL.md). Every module on.
+method:
+  name: tidegr
+  kind: graphrec
+  dim: 64
+  layers: 2
+  init_std: 0.1
+  lr: 0.001
+  batch: 4096
+  loss: ssm            # sampled softmax (B2)
+  n_neg: 64
+  tau_s: 0.2
+  contrast: {lambda_cl: 0.0, eps: 0.2, tau: 0.2, layer: 1}   # XSimGCL noise contrast (B1), switched on by tuning
+  recent: {gamma: 0.5, n: auto}                              # recent-interest term (B3)
+  env_head: true
+  vrex: {lambda_inv: 0.1, n_c: 1024}
+  anchor: belief       # Gaussian belief: precision-weighted anchor + Laplace + drift-gated forgetting
+  belief: {n0: 1.0, gamma_F: 1.0, q0: 0.0001, q1: 0.5, h: 4.0, gate: true}   # prior worth n0 interactions
+  drift: {enabled: true, mode: surprise, delta: 0.5, varsigma: 0.9}
+  rl: {enabled: true, groups: 5, prior_std: 0.01, noise_std: 0.05, delta0: 0.02, w_f: 1.0, w_c: 0.5}
+  memory: {enabled: true, frac: 0.02, window: auto, season_slots: true}
+  openworld: {enabled: true, zeta: 1.0, lambda_w: 1.0}
+  edge: {rho0: 0.95, rhoinf: 0.6, tau_rho: auto}
+  edge_samples: 4      # test-time structural variance
+  thompson: true       # R2 exploration mode (separate table)
+  calib_use_var: true
+  beta_r: 0.5
+  continual: ft
+  epochs: {warmup_max: 200, warmup_patience: 5, warmup_eval_every: 2, stream: 20, stream_patience: 3, stream_eval_every: 1}
+  ckpt_every_epochs: 5
+
+# coordinate search on the history-only mini-stream (tidegr/tune.py); defaults are the safe choices,
+# a component is switched on only if it improves validation NDCG on history data.
+tune:
+  - [method.loss, [ssm, bpr]]
+  - [method.tau_s, [0.1, 0.2]]
+  - [method.contrast.lambda_cl, [0.0, 0.1]]
+  - [method.recent.gamma, [0.0, 0.5, 1.0]]
+  - [method.vrex.lambda_inv, [0.0, 0.1]]
+  - [method.belief.n0, [0.1, 1.0]]
+  - [method.layers, [2, 3]]
