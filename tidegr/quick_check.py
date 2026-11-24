@@ -96,8 +96,9 @@ def main(argv=None):
 
     # --- resume self-test: continue the TIDE-GR short run by one more block from its checkpoint
     resume_ok = None
-    if "tidegr" in res and len(data.stream_blocks) > a.blocks:
-        r0 = res["tidegr"]
+    main = "tidegr_v2" if "tidegr_v2" in res else "tidegr"
+    if main in res and len(data.stream_blocks) > a.blocks:
+        r0 = res[main]
         view3 = dataclasses.replace(data, stream_blocks=data.stream_blocks[: a.blocks + 1])
         rr = Runner(r0["cfg"], view3, r0["run_dir"], seed=0, device=device)
         rr.load()
@@ -132,11 +133,13 @@ def main(argv=None):
     per_method = {}
     for m in res:
         per_method[m] = {"typical_h": full_hours(m, typical_epochs), "worst_h": full_hours(m, wmax)}
-    tid = per_method.get("tidegr", {"typical_h": 1.0, "worst_h": 1.5})
+    # v2 plans name the v2 model "tidegr" and the unchanged v1 model "tidegr_v1"
+    tid = per_method.get("tidegr_v2") or per_method.get("tidegr", {"typical_h": 1.0, "worst_h": 1.5})
+    tid_v1 = per_method.get("tidegr") if "tidegr_v2" in per_method and "tidegr" in per_method else         {k: v / 3.0 for k, v in tid.items()}  # v1 trains one arm per block, v2 four
     ft = per_method.get("lightgcn_ft", {"typical_h": 0.6 * tid["typical_h"], "worst_h": 0.6 * tid["worst_h"]})
     sas = per_method.get("sasrec", {"typical_h": ft["typical_h"] * 1.5, "worst_h": ft["worst_h"] * 1.5})
     factor = {
-        "tidegr": tid, "lightgcn_ft": ft, "xsimgcl_ft": {k: 1.3 * v for k, v in ft.items()},
+        "tidegr": tid, "tidegr_v1": tid_v1, "lightgcn_ft": ft, "xsimgcl_ft": {k: 1.3 * v for k, v in ft.items()},
         "pda": ft, "ewc": {k: 1.2 * v for k, v in ft.items()}, "kd_lite": ft, "sasrec": sas,
         "sqn": {k: 1.4 * v for k, v in sas.items()}, "ensemble": {k: 5 * v for k, v in ft.items()},
         "lightgcn_retrain": {k: (res.get("lightgcn_ft", {}).get("warmup_epoch_s") or 1.0) * typical_epochs
