@@ -296,7 +296,8 @@ class Runner:
         u, i, ts = u[ok], i[ok], ts[ok]
         t0 = time.time()
         res = self.eval_targets(self.method, k, u, i, include_train_of_block=False, light=False,
-                                exclude_target_from_mask=False, extra=True, return_top=self.K)
+                                exclude_target_from_mask=False, extra=True, return_top=self.K,
+                                cache_key=("test", k))
         if res is None:
             return rec
         users = res["users"]
@@ -359,6 +360,12 @@ class Runner:
         np.savez_compressed(os.path.join(self.run_dir, "per_user", f"block_{k}.npz"), users=users,
                             ndcg=acc[f"ndcg@{self.K}"], recall=acc[f"recall@{self.K}"])
         self._last_test = {"users": users, "ndcg": acc[f"ndcg@{self.K}"], "ece": rec.get("ece", 0.0)}
+        if hasattr(self.method, "eval_shadows"):  # v2 RL: counterfactual (shadow) arms on the same users
+            sh = self.method.eval_shadows(self, k, u, i)
+            if sh:
+                self._last_test["shadow_ndcg"] = sh
+                for a, v in sh.items():
+                    rec[f"shadow{a}_ndcg@20"] = float(np.mean(v))
         if pair_info is not None:
             self._last_test.update(pair_u=pair_info[0], pair_i=pair_info[1], pair_y=pair_info[2],
                                    pair_p=pair_info[3])

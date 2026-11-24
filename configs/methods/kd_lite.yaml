@@ -6,4 +6,4 @@ method:
   anchor: l2
   anchor_l2: 100.0
 tune:
-  - [method.anchor_l2, [10.0, 100.0, 1000.0]]
+  - [method.anchor_l2, [10.0, 100.0, 1000.0, 10000.0, 100000.0]]   # v2: wider grid (fairness)

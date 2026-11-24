@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import numpy as np
 
+ARM_DEFAULTS = {"q1": 0.5, "epoch_mult": 1.0, "replay_ratio": 1.0, "anchor_mult": 1.0, "lr_mult": 1.0}
+
 DEFAULT_ARMS = [
     {"name": "a0_default", "q1": 0.5, "epoch_mult": 1.0, "replay_ratio": 1.0},
     {"name": "a1_conservative", "q1": 0.1, "epoch_mult": 0.5, "replay_ratio": 2.0},
@@ -87,3 +89,65 @@ class LinTSBandit:
         self.A, self.b = d["A"], d["b"]
         self.rng.bit_generator.state = d["rng"]
         self.pending, self.history, self.arms = d["pending"], d["history"], d["arms"]
+
+
+class PairedTSBandit:
+    """v2 controller: contextual linear Thompson sampling on *paired* gains.
+
+    Reward of arm a at block k = (NDCG@20 of the model updated with arm a) - (NDCG@20 of the model updated
+    with the reference arm 0), both measured on the SAME users of block k+1 (the updates start from the same
+    state, "shadow" models). The pairing removes the block difficulty and the user-group difficulty that made
+    the v1 reward unlearnable, so the reference arm has gain 0 by definition and only arms 1..K-1 are
+    modelled:  gain_a(x) = x . w_a,  w_a ~ N(A_a^-1 b_a, sigma^2 A_a^-1).
+    The bandit plays the arm with the largest sampled gain if it is > 0, otherwise the reference arm
+    (a safe fallback: an arm is only used when the evidence says it beats the default).
+    feedback = "all": every arm has a shadow model, so every arm is observed every block (no exploration cost);
+    feedback = "chosen": only the played arm and the reference are observed (classic bandit feedback).
+    """
+
+    def __init__(self, arms, dim: int = 8, prior_std: float = 0.3, noise_std: float = 0.3,
+                 seed: int = 0, warm_blocks: int = 2):
+        self.arms = [{**ARM_DEFAULTS, **a} for a in arms]
+        self.dim = dim
+        self.sigma2 = noise_std ** 2
+        self.A = [np.eye(dim) * (self.sigma2 / prior_std ** 2) for _ in self.arms]
+        self.b = [np.zeros(dim) for _ in self.arms]
+        self.rng = np.random.default_rng(seed)
+        self.warm_blocks = int(warm_blocks)
+        self.n_decisions = 0
+        self.pending: list = []
+        self.history: list = []
+
+    def gains(self, x: np.ndarray, sample: bool = True) -> np.ndarray:
+        g = np.zeros(len(self.arms))
+        for a in range(1, len(self.arms)):
+            Ainv = np.linalg.inv(self.A[a])
+            mu = Ainv @ self.b[a]
+            w = self.rng.multivariate_normal(mu, self.sigma2 * Ainv) if sample else mu
+            g[a] = float(x @ w)
+        return g
+
+    def choose(self, x: np.ndarray) -> int:
+        self.n_decisions += 1
+        if self.n_decisions <= self.warm_blocks:
+            return 0
+        return int(np.argmax(self.gains(x)))
+
+    def update(self, arm: int, x: np.ndarray, gain: float):
+        if arm == 0:
+            return
+        self.A[arm] += np.outer(x, x)
+        self.b[arm] += x * gain
+
+    def state_dict(self):
+        return {"A": self.A, "b": self.b, "rng": self.rng.bit_generator.state, "pending": self.pending,
+                "history": self.history, "arms": self.arms, "n_decisions": self.n_decisions}
+
+    def load_state_dict(self, d):
+        if "n_decisions" not in d or [a["name"] for a in d["arms"]] != [a["name"] for a in self.arms]:
+            return  # state of a different controller (e.g. a v1 warm-up checkpoint): start fresh
+        self.A, self.b = d["A"], d["b"]
+        self.rng.bit_generator.state = d["rng"]
+        self.pending, self.history = d["pending"], d["history"]
+        self.arms = [{**ARM_DEFAULTS, **a} for a in d["arms"]]
+        self.n_decisions = d["n_decisions"]

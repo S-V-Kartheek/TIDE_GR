@@ -1,0 +1,37 @@
+# TIDE-GR v2 (branch v2). Same model as v1 (tidegr.yaml); what changes is HOW it adapts during the stream.
+# Every v2 default below was chosen on HISTORY data only (a pseudo-stream on the history days 6-12, warm-up on
+# days 0-5; see research/TIDE-GR_v2_changes.md). The stream test days were not used to choose anything.
+#
+#  1. memory replay: a small, recency-weighted reminder of the last days. v1 replayed as many old edges as new
+#     ones, sampled uniformly from the pooled memory, so the largest OLD days dominated every update.
+#  2. RL controller (rl.mode: shadow): learns from PAIRED counterfactual rewards. Every arm is trained from the
+#     same state as a shadow model and scored on the same users of the next day, so day difficulty cancels.
+#     The arms act on the lever that matters on this data: how much of the past to replay / anchor to
+#     (stability) versus how freely to follow the new day (plasticity).
+inherit: [tidegr.yaml]
+method:
+  name: tidegr_v2
+  tau_s: 0.1                                   # v1 tuning result (history only)
+  memory: {enabled: true, frac: 0.02, window: auto, season_slots: true,
+           replay_ratio: 1.0, sampling: env_recency, recency_decay: 0.7}
+  rl:
+    enabled: true
+    mode: shadow          # paired counterfactual Thompson-sampling controller (rl_bandit.PairedTSBandit)
+    feedback: all         # every arm is trained as a shadow every day -> every arm is observed every day
+    warm_blocks: 2        # first 2 stream days play the reference arm while evidence is collected
+    prior_std: 0.3
+    noise_std: 0.3
+    reward_scale: 100.0   # reward = gain over the reference arm in NDCG@20 points (x100)
+    w_f: 0.25             # + 0.25 x gain in memory-validation NDCG (stability; never the retention test slices)
+    arms:                 # replay_ratio = replayed edges per new edge
+      - {name: a0_default, q1: 0.5, anchor_mult: 1.0, lr_mult: 1.0, replay_ratio: 0.25, epoch_mult: 1.0}
+      - {name: a1_stable,  q1: 0.1, anchor_mult: 3.0, lr_mult: 1.0, replay_ratio: 1.0,  epoch_mult: 1.0}
+      - {name: a2_plastic, q1: 1.0, anchor_mult: 0.5, lr_mult: 1.0, replay_ratio: 0.0,  epoch_mult: 1.0}
+      - {name: a3_free,    q1: 1.0, anchor_mult: 0.1, lr_mult: 1.5, replay_ratio: 0.0,  epoch_mult: 1.0}
+
+# history-only coordinate search (tidegr/tune.py), starting from the defaults above
+tune:
+  - [method.recent.gamma, [0.5, 1.0]]
+  - [method.vrex.lambda_inv, [0.0, 0.1]]
+  - [method.belief.n0, [0.1, 1.0]]
+  - [method.contrast.lambda_cl, [0.0, 0.1]]

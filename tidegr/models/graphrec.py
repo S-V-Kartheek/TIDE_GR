@@ -24,7 +24,7 @@ from ..features import FeatureBank
 from ..graph import GraphState, propagate, propagate_sq
 from ..memory import ReplayMemory
 from ..openworld import fit_text_map
-from ..rl_bandit import DEFAULT_ARMS, LinTSBandit
+from ..rl_bandit import DEFAULT_ARMS, LinTSBandit, PairedTSBandit
 from ..utils import TimeLimitReached, get_rng_state, log, set_rng_state
 from .base import Method
 from ..data.stream import PART_TRAIN, PART_VAL
@@ -75,6 +75,8 @@ class GraphRec(Method):
         self.cl_layer = int(_g(cfg, "method.contrast.layer", 1))
         self.gamma_r = float(_g(cfg, "method.recent.gamma", 0.0))
         self.n_recent = int(_g(cfg, "method.recent.n", 20))
+        # v2: recency weights inside the recent-interest term (1.0 = plain mean of the last n items, as v1)
+        self.recent_decay = float(_g(cfg, "method.recent.decay", 1.0))
         self.use_env = bool(m.get("env_head", True))
         self.pda = bool(m.get("pda", False))
         self.pda_gamma = float(m.get("pda_gamma", 0.1))
@@ -117,6 +119,16 @@ class GraphRec(Method):
         self.ep_s_pat = int(ep.get("stream_patience", 3))
         self.ep_s_every = int(ep.get("stream_eval_every", 1))
         self.alarm_mult = float(m.get("alarm_epoch_mult", 2.0))
+        # --- v2: stream-phase optimisation (v1 re-used the 4096 warm-up batch: a stream block of ~4k edges
+        #     then gives 1-2 optimiser steps per epoch, i.e. at most ~40 Adam steps per block)
+        so = m.get("stream_opt", {}) or {}
+        self.stream_batch = int(so.get("batch", self.batch))
+        self.stream_lr = float(so.get("lr", self.lr))
+        self.anchor_scale = float(_g(cfg, "method.belief.anchor_scale", 1.0))
+        self.anchor_mult_node = None  # [N,1] per-node multiplier of the anchor, set by the RL controller
+        self.replay_ratio_base = float(_g(cfg, "method.memory.replay_ratio", 1.0))
+        self.replay_sampling = str(_g(cfg, "method.memory.sampling", "pooled"))  # pooled | env_recency
+        self.replay_decay = float(_g(cfg, "method.memory.recency_decay", 0.8))
         self.supports_var = self.belief
         self.supports_rel = self.belief
         self.supports_ts = self.ts_on
@@ -139,6 +151,16 @@ class GraphRec(Method):
                                   prior_std=float(_g(cfg, "method.rl.prior_std", 0.01)),
                                   noise_std=float(_g(cfg, "method.rl.noise_std", 0.05)),
                                   delta0=float(_g(cfg, "method.rl.delta0", 0.02)), seed=seed)
+        # v2 controller (rl.mode: shadow) - see rl_bandit.PairedTSBandit
+        self.rl_mode = str(_g(cfg, "method.rl.mode", "v1"))
+        self.rl_feedback = str(_g(cfg, "method.rl.feedback", "all"))
+        self.rl_scale = float(_g(cfg, "method.rl.reward_scale", 100.0))  # NDCG@20 gain in points (x100)
+        if self.rl_mode == "shadow":
+            self.bandit = PairedTSBandit(arms=arms, dim=8,
+                                         prior_std=float(_g(cfg, "method.rl.prior_std", 0.3)),
+                                         noise_std=float(_g(cfg, "method.rl.noise_std", 0.3)), seed=seed,
+                                         warm_blocks=int(_g(cfg, "method.rl.warm_blocks", 2)))
+        self.shadows: dict = {}  # arm -> parameters of the model updated with that arm (not played)
         self.n_groups = int(_g(cfg, "method.rl.groups", 5))
         self.rl_random = bool(_g(cfg, "method.rl.random", False))
         self.rl_no_drift_ctx = bool(_g(cfg, "method.rl.no_drift_context", False))
@@ -192,14 +214,22 @@ class GraphRec(Method):
         R = self.fb.recent(k, self.n_recent)
         return torch.as_tensor(R, device=self.device)
 
-    @staticmethod
-    def _recent_mean(R_rows: torch.Tensor, Zi: torch.Tensor):
-        """mean of Zi over valid indices in R_rows [B,n] (-1 = pad); also count."""
-        valid = R_rows >= 0
+    def _recent_w(self, R_rows: torch.Tensor) -> torch.Tensor:
+        """[B,n] weights of the last-n items (columns are oldest -> newest; 0 for padding)."""
+        valid = (R_rows >= 0).float()
+        if self.recent_decay >= 1.0:
+            return valid
+        n = R_rows.shape[1]
+        w = self.recent_decay ** torch.arange(n - 1, -1, -1, device=R_rows.device, dtype=torch.float32)
+        return valid * w.unsqueeze(0)
+
+    def _recent_mean(self, R_rows: torch.Tensor, Zi: torch.Tensor):
+        """(recency-weighted) mean of Zi over valid indices in R_rows [B,n] (-1 = pad); also weight sum."""
+        w = self._recent_w(R_rows)
         idx = R_rows.clamp_min(0)
-        E = Zi[idx] * valid.unsqueeze(-1)
-        cnt = valid.sum(1, keepdim=True).clamp_min(1)
-        return E.sum(1) / cnt, valid, cnt
+        E = Zi[idx] * w.unsqueeze(-1)
+        cnt = w.sum(1, keepdim=True).clamp_min(1e-6) if self.recent_decay < 1.0 else w.sum(1, keepdim=True).clamp_min(1)
+        return E.sum(1) / cnt, w > 0, cnt
 
     def _known_items(self) -> torch.Tensor:
         idx = np.where(self.seen_item)[0]
@@ -326,7 +356,10 @@ class GraphRec(Method):
             loss = loss + self.lambda_cl * cl
         # anchor / regularisation
         if self.anchor in ("belief", "ewc") and self.phi_prev is not None:
-            an = 0.5 * (self.lam_pred * (self.theta - self.mu_pred) ** 2).sum() / N_k
+            lam_eff = self.lam_pred if self.anchor_scale == 1.0 else self.lam_pred * self.anchor_scale
+            if self.anchor_mult_node is not None:
+                lam_eff = lam_eff * self.anchor_mult_node
+            an = 0.5 * (lam_eff * (self.theta - self.mu_pred) ** 2).sum() / N_k
             loss = loss + an
             if self.phi_prev is not None:
                 ph = sum(((p - q) ** 2).sum() for p, q in zip(self._phi_params(), self.phi_prev))
@@ -345,11 +378,13 @@ class GraphRec(Method):
             loss = loss + 1e-6 * (self.a_u ** 2).sum()
         return loss, parts
 
-    def _train(self, T, max_epochs, patience, eval_every, val_block, ctx, resume_key=None):
+    def _train(self, T, max_epochs, patience, eval_every, val_block, ctx, resume_key=None,
+               batch=None, lr=None):
         """Joint Adam training with early stopping on validation NDCG@20.
         If resume_key is set, progress is checkpointed via ctx.save() every few epochs."""
         params = [self.theta] + self._phi_params()
-        opt = torch.optim.Adam(params, lr=self.lr)
+        bs = int(batch or self.batch)
+        opt = torch.optim.Adam(params, lr=float(lr or self.lr))
         st = None
         if resume_key and self.train_state and self.train_state.get("key") == resume_key:
             st = self.train_state
@@ -367,8 +402,8 @@ class GraphRec(Method):
             while st["epoch"] < max_epochs:
                 te = time.time()
                 perm = torch.randperm(n, device=self.device)
-                for a in range(0, n, self.batch):
-                    idx = perm[a: a + self.batch]
+                for a in range(0, n, bs):
+                    idx = perm[a: a + bs]
                     Z, Zcl = self._forward_full(T["A"], noise)
                     loss, _ = self._batch_loss(T, idx, Z, Zcl if noise else None, N_k)
                     opt.zero_grad(set_to_none=True)
@@ -620,7 +655,9 @@ class GraphRec(Method):
     def observe_test(self, block: int, info: dict):
         """Called after the runner tested block `block` (before training on it)."""
         self.last_ece = float(info.get("ece", 0.0))
-        if self.rl_on and self.bandit.pending:
+        if self.rl_on and self.rl_mode == "shadow":
+            self._shadow_rewards(info)
+        elif self.rl_on and self.bandit.pending:
             pu, py, pp = info["pair_u"], info["pair_y"], info["pair_p"]
 
             def ece_fn(users):
@@ -677,10 +714,13 @@ class GraphRec(Method):
         return q1_node, arms[blk_arm]["epoch_mult"], arms[blk_arm]["replay_ratio"], [arms[a]["name"] for a in chosen]
 
     def update(self, block: int, ctx):
+        if self.rl_on and self.rl_mode == "shadow" and self.continual != "retrain":
+            return self._update_shadow(block, ctx)
         d = self.data
         t0 = time.time()
         u, i, _, _ = d.pairs(block, (PART_TRAIN,))
         q1_node, ep_mult, replay_ratio, arm_names = self._rl_decide(block, u, i)
+        lr_mult = float(getattr(self, "_arm_lr_mult", 1.0))
         if (not self.rl_on) and self.drift_on and self.drift.alarm:
             ep_mult *= self.alarm_mult
         active = np.unique(np.concatenate([u, i + self.nU]))
@@ -696,15 +736,20 @@ class GraphRec(Method):
         epochs = int(round(self.ep_s * ep_mult))
         info = {"epochs": 0}
         if epochs > 0 and len(u):
-            n_rep = int(round(replay_ratio * len(u))) if self.mem_on else 0
-            mu_, mi_, me_ = self.memory.sample(n_rep, self.rng) if n_rep else (np.zeros(0, int),) * 3
+            n_rep = int(round(replay_ratio * self.replay_ratio_base * len(u))) if self.mem_on else 0
+            if n_rep:
+                mu_, mi_, me_ = self.memory.sample(n_rep, self.rng, mode=self.replay_sampling,
+                                                   now=block, decay=self.replay_decay)
+            else:
+                mu_, mi_, me_ = (np.zeros(0, int),) * 3
             pu = np.concatenate([u, mu_])
             pi = np.concatenate([i, mi_])
             pe = np.concatenate([np.full(len(u), block), me_])
             T = self._build_train(pu, pi, pe, block)
             with torch.no_grad():
                 self.theta.copy_(self.mu)
-            info = self._train(T, epochs, self.ep_s_pat, self.ep_s_every, block, ctx)
+            info = self._train(T, epochs, self.ep_s_pat, self.ep_s_every, block, ctx,
+                               batch=self.stream_batch, lr=self.stream_lr * lr_mult)
         with torch.no_grad():
             self.mu = self.theta.detach().clone()
         # memory selection, Laplace (memory edges excluded), eviction hand-back
@@ -734,6 +779,174 @@ class GraphRec(Method):
                           if self.seen_user.any() else 0.0})
         self._log_lambda(f"block{block}")
         return info
+
+    # ================================================================== v2 RL controller (shadow arms)
+    def _rl_context(self, block, u_blk, i_blk) -> np.ndarray:
+        users = np.unique(u_blk)
+        D = self.drift.D
+        new_u = float(np.mean(self.data.user_first_block[users] == block)) if len(users) else 0.0
+        items = np.unique(i_blk)
+        new_i = float(np.mean(self.data.item_first_block[items] == block)) if len(items) else 0.0
+        x = np.array([
+            np.clip(self.drift.last_S[users].mean(), -10, 10) / 5.0 if len(users) else 0.0,
+            float(np.mean(D[users] > self.h)) if len(users) else 0.0,
+            min(self.drift.last_js * 10.0, 5.0),
+            min(self.last_ece * 10.0, 5.0),
+            new_u, new_i,
+            np.log1p(len(u_blk)) / 15.0,
+            1.0,
+        ])
+        if self.rl_no_drift_ctx:
+            x[0:3] = 0.0
+        return x
+
+    def _update_shadow(self, block: int, ctx):
+        """Update with the arm chosen by the paired Thompson bandit; the other arms (all of them, or only the
+        reference arm) are trained from the same state as shadow models and scored on the next block."""
+        d = self.data
+        t0 = time.time()
+        u, i, _, _ = d.pairs(block, (PART_TRAIN,))
+        arms = self.bandit.arms
+        x = self._rl_context(block, u, i)
+        if self.rl_random:
+            chosen = int(self.rng.integers(len(arms)))
+        elif self.fixed_arm is not None:
+            chosen = int(self.fixed_arm)
+        else:
+            chosen = self.bandit.choose(x)
+        if self.fixed_arm is not None:
+            train = [chosen]
+        elif self.rl_feedback == "all":
+            train = list(range(len(arms)))
+        else:
+            train = sorted({0, chosen})
+        active = np.unique(np.concatenate([u, i + self.nU]))
+        self._admit(block)
+        self.graph.add(u, i, block)
+        self._mark_seen(block, (PART_TRAIN,))
+        mu0 = self.mu.clone()
+        env0 = copy.deepcopy(self.env.state_dict())
+        a0 = self.a_u.detach().clone()
+        results = {}
+        for a in train:
+            arm = arms[a]
+            self.mu = mu0
+            self._predict_step(active, np.full(self.N, arm["q1"], np.float32))
+            self.anchor_mult_node = torch.full((1, 1), float(arm["anchor_mult"]), device=self.device)
+            with torch.no_grad():
+                self.theta.copy_(mu0)
+                self.a_u.copy_(a0)
+            self.env.load_state_dict(env0)
+            epochs = int(round(self.ep_s * arm["epoch_mult"]))
+            info = {"epochs": 0}
+            if epochs > 0 and len(u):
+                n_rep = int(round(arm["replay_ratio"] * self.replay_ratio_base * len(u))) if self.mem_on else 0
+                if n_rep:
+                    mu_, mi_, me_ = self.memory.sample(n_rep, self.rng, mode=self.replay_sampling,
+                                                       now=block, decay=self.replay_decay)
+                else:
+                    mu_, mi_, me_ = (np.zeros(0, int),) * 3
+                T = self._build_train(np.concatenate([u, mu_]), np.concatenate([i, mi_]),
+                                      np.concatenate([np.full(len(u), block), me_]), block)
+                info = self._train(T, epochs, self.ep_s_pat, self.ep_s_every, block, ctx,
+                                   batch=self.stream_batch, lr=self.stream_lr * float(arm["lr_mult"]))
+            mem = None  # stability: NDCG on the validation slices of the memory (never the retention test slices)
+            if self.mem_on and self.w_f > 0 and self.memory.env_ids():
+                mu_keep, self.mu = self.mu, self.theta.detach().clone()
+                mem = float(ctx.memory_ndcg(self, block))
+                self.mu = mu_keep
+            results[a] = {"theta": self.theta.detach().clone(), "env": copy.deepcopy(self.env.state_dict()),
+                          "a_u": self.a_u.detach().clone(), "lam_pred": self.lam_pred, "mu_pred": self.mu_pred,
+                          "info": info, "mem": mem}
+        self.anchor_mult_node = None
+        r = results[chosen]
+        with torch.no_grad():
+            self.theta.copy_(r["theta"])
+            self.a_u.copy_(r["a_u"])
+        self.env.load_state_dict(r["env"])
+        self.lam_pred, self.mu_pred = r["lam_pred"], r["mu_pred"]
+        self.mu = self.theta.detach().clone()
+        self.shadows = {a: {"mu": res["theta"], "env": res["env"], "a_u": res["a_u"]}
+                        for a, res in results.items() if a != chosen}
+        self.bandit.pending = [{"block": int(block), "x": x.tolist(), "chosen": int(chosen),
+                                "arms": [int(a) for a in train],
+                                "mem": {int(a): res["mem"] for a, res in results.items() if res["mem"] is not None}}]
+        # memory selection, Laplace (memory edges excluded), eviction hand-back: as in v1
+        sel = np.zeros(0, int)
+        if self.mem_on:
+            D = self.drift.D
+            prio = self.rho0 * np.exp(-D[u] / self.h) * np.exp(-D[i + self.nU] / self.h)
+            sel = self.memory.select(u, i, prio, self.rng)
+        if self.belief:
+            keep = np.ones(len(u), bool)
+            keep[sel] = False
+            self.lam = self.lam_pred + self.gamma_F * self._curvature(u[keep], i[keep], block)
+        if self.mem_on:
+            vu, vi, _, _ = d.pairs(block, (PART_VAL,))
+            ev_u, ev_i = self.memory.insert(block, int(d.block_season[block]), u[sel], i[sel], vu, vi, self.rng)
+            if self.belief and len(ev_u):
+                self.lam = self.lam + self.gamma_F * self._curvature(ev_u, ev_i, block)
+        self.phi_prev = [p.detach().clone() for p in self._phi_params()]
+        self.eta = self.fb.fit_eta(block + 1)
+        self._fit_openworld()
+        est = self.bandit.gains(x, sample=False) if hasattr(self.bandit, "gains") else []
+        self.diag.update({"arms": [arms[chosen]["name"]], "epochs": r["info"].get("epochs"),
+                          "alarm": bool(self.drift.alarm), "update_s": time.time() - t0,
+                          "memory_size": self.memory.size(), "eta": self.eta,
+                          "rl_est_gain": {arms[a]["name"]: round(float(g), 4) for a, g in enumerate(est)},
+                          "mean_D_users": float(self.drift.D[: self.nU][self.seen_user].mean())
+                          if self.seen_user.any() else 0.0})
+        self._log_lambda(f"block{block}")
+        return r["info"]
+
+    @torch.no_grad()
+    def eval_shadows(self, runner, block, tu, ti) -> dict:
+        """Per-user NDCG@K of every shadow model on the test targets of `block` (same users, same order as
+        the played model). Called by the runner after the test of `block`, before observe_test."""
+        if not self.shadows:
+            return {}
+        saved = (self.mu, copy.deepcopy(self.env.state_dict()), self.a_u.detach().clone(), self.cache)
+        out = {}
+        try:
+            for a, sh in self.shadows.items():
+                self.mu = sh["mu"].to(self.device)
+                self.env.load_state_dict(sh["env"])
+                self.a_u.copy_(sh["a_u"].to(self.device))
+                res = runner.eval_targets(self, block, tu, ti, include_train_of_block=False, light=True,
+                                          exclude_target_from_mask=False, cache_key=("test", block))
+                if res is not None:
+                    out[int(a)] = res["acc"][f"ndcg@{runner.K}"]
+        finally:
+            self.mu = saved[0]
+            self.env.load_state_dict(saved[1])
+            self.a_u.copy_(saved[2])
+            self.cache = saved[3]
+        return out
+
+    def _shadow_rewards(self, info: dict):
+        if not self.bandit.pending:
+            return
+        dec = self.bandit.pending[0]
+        nd = {int(dec["chosen"]): np.asarray(info["ndcg"], np.float64)}
+        for a, v in (info.get("shadow_ndcg") or {}).items():
+            nd[int(a)] = np.asarray(v, np.float64)
+        self.bandit.pending = []
+        self.shadows = {}
+        if 0 not in nd:
+            return
+        x = np.asarray(dec["x"])
+        mem = {int(k): v for k, v in (dec.get("mem") or {}).items()}
+        gains = {}
+        for a, v in nd.items():
+            if a == 0 or len(v) != len(nd[0]):
+                continue
+            g = float(np.mean(v - nd[0])) * self.rl_scale  # plasticity: next-day accuracy vs. reference arm
+            if a in mem and 0 in mem:                       # stability: memory-validation NDCG vs. reference
+                g += self.w_f * (mem[a] - mem[0]) * self.rl_scale
+            gains[self.bandit.arms[a]["name"]] = round(g, 4)
+            self.bandit.update(a, x, g)
+        self.bandit.history.append({"block": dec["block"], "chosen": dec["chosen"], "gains": gains})
+        self.diag["rl_observed_gain"] = gains
 
     def _retrain(self, block, ctx, t0):
         """LightGCN-retrain baseline: re-initialise and train on all history."""
@@ -786,14 +999,13 @@ class GraphRec(Method):
         if self.belief and not light:
             s = propagate_sq(A2, 1.0 / self.lam, self.L)
             s_u, s_i = s[: self.nU], s[self.nU:]
-            if Rk is not None:
-                valid = Rk >= 0
-                cnt = valid.sum(1, keepdim=True).clamp_min(1).float()
+            if Rk is not None:  # Var of a weighted mean = sum w^2 s / (sum w)^2
                 add = torch.zeros_like(s_u)
                 for a in range(0, self.nU, 8192):
                     r = Rk[a: a + 8192]
-                    v = r >= 0
-                    add[a: a + 8192] = (s_i[r.clamp_min(0)] * v.unsqueeze(-1)).sum(1) / cnt[a: a + 8192] ** 2
+                    w = self._recent_w(r)
+                    cnt = w.sum(1, keepdim=True).clamp_min(1e-6 if self.recent_decay < 1.0 else 1.0)
+                    add[a: a + 8192] = (s_i[r.clamp_min(0)] * (w ** 2).unsqueeze(-1)).sum(1) / cnt ** 2
                 s_u = s_u + self.gamma_r ** 2 * add
             c["s_u"], c["s_i"] = s_u, s_i
             c["edge_Z"] = []
@@ -908,6 +1120,8 @@ class GraphRec(Method):
             "ts_scale": self.ts_scale, "var_scale": self.var_scale,
             "seen_user": self.seen_user, "seen_item": self.seen_item,
             "train_state": ts, "rng": self.rng.bit_generator.state, "diag": self.diag,
+            "shadows": {a: {"mu": v["mu"].cpu(), "env": v["env"], "a_u": v["a_u"].cpu()}
+                        for a, v in self.shadows.items()},
         }
 
     def load_state_dict(self, st: dict):
@@ -939,6 +1153,8 @@ class GraphRec(Method):
         self.train_state = ts
         self.rng.bit_generator.state = st["rng"]
         self.diag = st.get("diag", {})
+        self.shadows = {a: {"mu": v["mu"].to(dev), "env": v["env"], "a_u": v["a_u"].to(dev)}
+                        for a, v in (st.get("shadows") or {}).items()}
 
     def diagnostics(self) -> dict:
         return dict(self.diag)

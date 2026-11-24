@@ -44,6 +44,8 @@ def tune_method(data, data_yaml, method_yaml, name, runs_root, device, budget, o
     log(f"[tune] {name}: {len(grid)} parameters, mini-stream blocks={view.stream_blocks}")
 
     def trial(params: dict) -> float:
+        # parameters equal to the config default are dropped, so the same configuration is never trained twice
+        params = {p: v for p, v in params.items() if base_cfg.get_path(p) != v}
         k = _key(params)
         if k in res["trials"]:
             return res["trials"][k]
@@ -69,9 +71,6 @@ def tune_method(data, data_yaml, method_yaml, name, runs_root, device, budget, o
         for v in values:
             cand = dict(best)
             cand[path] = v
-            cur = base_cfg.get_path(path)
-            if path not in best and v == cur:
-                continue  # same as the default already evaluated
             s = trial(cand)
             if s > best_score + 1e-5:
                 best, best_score = cand, s

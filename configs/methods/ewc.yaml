@@ -5,4 +5,4 @@ method:
   anchor: ewc
   belief: {n0: 1.0, gamma_F: 100.0}
 tune:
-  - [method.belief.gamma_F, [1.0, 100.0, 10000.0]]
+  - [method.belief.gamma_F, [1.0, 100.0, 10000.0, 1000000.0]]   # v2: wider grid (fairness)

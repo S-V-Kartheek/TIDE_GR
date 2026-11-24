@@ -78,10 +78,24 @@ class ReplayMemory:
             es.append(np.full(len(e["u"]), b, np.int64))
         return np.concatenate(us), np.concatenate(is_), np.concatenate(es)
 
-    def sample(self, n: int, rng: np.random.Generator):
+    def sample(self, n: int, rng: np.random.Generator, mode: str = "pooled", now: int = 0,
+               decay: float = 0.8):
+        """pooled: uniform over all stored edges (v1; large old blocks dominate).
+        env_recency: every environment gets weight decay**(now - block), edges uniform inside it,
+        so the replay reminds of the *recent* past instead of the largest past."""
         u, i, e = self.all_pairs()
         if len(u) == 0 or n <= 0:
             return u[:0], i[:0], e[:0]
+        if mode == "env_recency":
+            blocks = np.asarray(sorted(self.envs), np.int64)
+            w = np.power(float(decay), np.maximum(now - blocks, 0).astype(np.float64))
+            w = w / w.sum()
+            pe = np.searchsorted(blocks, e)  # env slot of every stored edge
+            cnt = np.bincount(pe, minlength=len(blocks)).astype(np.float64)
+            p = (w / np.maximum(cnt, 1.0))[pe]
+            p = p / p.sum()
+            s = rng.choice(len(u), size=n, replace=True, p=p)
+            return u[s], i[s], e[s]
         s = rng.choice(len(u), size=n, replace=n > len(u))
         return u[s], i[s], e[s]
 
