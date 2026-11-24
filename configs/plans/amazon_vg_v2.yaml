@@ -36,7 +36,6 @@ runs:
   - {name: pda,              method: methods/pda.yaml,              seeds: [0], tune: true}
   - {name: ewc,              method: methods/ewc.yaml,              seeds: [0], tune: true}
   - {name: kd_lite,          method: methods/kd_lite.yaml,          seeds: [0], tune: true}
-  - {name: lightgcn_retrain, method: methods/lightgcn_retrain.yaml, seeds: [0], tuned_from: lightgcn_ft}
   # ---- stage 5 (if time remains): ablation seeds for the RL claims ----
   - {name: abl_rl_fixed_default, method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.fixed_arm: 0}}
   - {name: abl_rl_random,        method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.random: true}}
