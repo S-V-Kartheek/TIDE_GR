@@ -92,3 +92,26 @@ A local re-run of v1 on the full stream gave 0.0672 (Colab seed 0: 0.0662), so t
   were chosen on history days only.
 * The shadow controller trains every arm every day (4 arms ⇒ about 3–4× the update cost of v1; on a T4
   this is still only a few seconds per day).
+
+## 7. Second dataset: is Amazon Video_Games the right choice? (checked 2026-11-24)
+
+Four Amazon Reviews 2023 5-core categories were checked under our protocol. Blocks are quarters, history is
+before 2018, and the stream runs from 2018. Only users who already have history can be evaluated in a stream
+block, so the share of ratings from returning users matters most.
+
+| Category | Ratings | Users | Items | Evaluable users / stream quarter (median) | Ratings from returning users | New-item share | Ratings before 2015 | Fits a T4 plan? |
+|---|---|---|---|---|---|---|---|---|
+| **Video_Games** | 815k | 95k | 26k | **6.0k** | **0.80** | 0.12 | 0.33 | **yes (~1–2 h per run)** |
+| CDs_and_Vinyl | 1.55M | 124k | 89k | 4.7k | 0.82 | 0.08 | 0.57 (mostly old) | yes |
+| Toys_and_Games | 3.86M | 432k | 162k | 42k | 0.79 | 0.10 | 0.09 | no (≈5× VG per run) |
+| Movies_and_TV | 7.44M | 657k | 198k | 32k | 0.86 | 0.12 | 0.31 | no (≈9× VG per run) |
+
+**Decision: keep Video_Games.** It has enough evaluable users per quarter, a healthy share of returning users
+(real continual learning, not cold start only), new items for the open-world prior, item text, and
+21 stream quarters with seasons. It is also the only one of the four that fits the Colab budget with
+3 seeds and ablations. The loader was re-checked locally. It gives 13 history blocks and 21 stream quarters
+(2018Q1–2023Q1), and drops the two partial 2023 quarters automatically.
+
+Limitation to state in the paper: the official 5-core filter is computed on the whole timeline, so a user's
+"≥5 ratings" can include future ratings. This is the standard Amazon 2023 benchmark file, and reviewers
+accept it, but say it.
