@@ -38,3 +38,6 @@ runs:
   # ---- stage 5 (if time remains): ablation seeds for the RL claims ----
   - {name: abl_rl_fixed_default, method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.fixed_arm: 0}}
   - {name: abl_rl_random,        method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.random: true}}
+  # ---- stage 6 (added after the first pass): 3 seeds for the two closest RL comparisons ----
+  - {name: abl_rl_fixed_plastic, method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.fixed_arm: 2}}
+  - {name: abl_rl_ndcg_only,     method: methods/tidegr_v2.yaml, seeds: [1, 2], tuned_from: tidegr, overrides: {method.rl.w_f: 0.0}}
