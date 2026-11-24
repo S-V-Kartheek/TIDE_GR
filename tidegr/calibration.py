@@ -13,6 +13,9 @@ import torch
 import torch.nn.functional as F
 
 
+LOG_KAPPA_MAX = 30.0  # |log kappa| bound: a degenerate LBFGS fit must never overflow exp()
+
+
 class Calibrator:
     def __init__(self, use_var: bool = True):
         self.use_var = bool(use_var)
@@ -23,14 +26,14 @@ class Calibrator:
 
     @property
     def kappa(self):
-        return math.exp(self.log_kappa)
+        return math.exp(min(max(self.log_kappa, -LOG_KAPPA_MAX), LOG_KAPPA_MAX))
 
     @property
     def nu(self):
         return float(F.softplus(torch.tensor(self.raw_nu))) if self.use_var else 0.0
 
     def _logits(self, m, v, lk, b, rn):
-        kappa = torch.exp(lk)
+        kappa = torch.exp(lk.clamp(-LOG_KAPPA_MAX, LOG_KAPPA_MAX))
         z = kappa * m + b
         if self.use_var and v is not None:
             nu = F.softplus(rn)
@@ -64,7 +67,9 @@ class Calibrator:
             opt.step(closure)
         except Exception:
             return self
-        if all(torch.isfinite(p).all() for p in params):
+        # keep the previous fit if LBFGS diverged (non-finite or an absurd scale, seen with nearly
+        # constant scores, e.g. the no-boosters ablation trained with plain BPR)
+        if all(torch.isfinite(p).all() for p in params) and abs(float(lk)) < LOG_KAPPA_MAX:
             self.log_kappa, self.b, self.raw_nu = float(lk), float(b), float(rn)
             self.fitted = True
         return self
@@ -87,7 +92,7 @@ class Calibrator:
 
     def epistemic(self, m, v) -> np.ndarray:
         """EU ~ (sigma'(kappa m + b))^2 kappa^2 nu v   (v1 Eq. 24)."""
-        z = self.kappa * np.asarray(m) + self.b
+        z = np.clip(self.kappa * np.asarray(m, dtype=np.float64) + self.b, -60.0, 60.0)
         s = 1 / (1 + np.exp(-z))
         return (s * (1 - s)) ** 2 * self.kappa ** 2 * self.nu * np.asarray(v)
 
